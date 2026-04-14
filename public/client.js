@@ -1,163 +1,134 @@
-const map = L.map('map', {
-    zoomControl: false,
-    attributionControl: false
-}).setView([20, 0], 2);
+// import * as THREE from "https://cdn.skypack.dev/three@0.150.1";
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.module.js";
 
-L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-).addTo(map);
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const geometry = new THREE.SphereGeometry(5, 64, 64);
+// create earth with texture
+const loader = new THREE.TextureLoader();
+const earthTexture = loader.load(
+    "https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg",
+    () => {
+        console.log("✅ Earth texture loaded");
+        renderer.render(scene, camera);
+    },
+    undefined,
+    (err) => {
+        console.warn("Texture failed, using fallback color:", err.message);
+        // fallback to blue color if texture fails
+        const canvas = document.createElement('canvas');
+        canvas.width = 2048;
+        canvas.height = 1024;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#1a5a96';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#0d3d5c';
+        for (let i = 0; i < 50; i++) {
+            ctx.fillRect(Math.random() * 2048, Math.random() * 1024, Math.random() * 200, Math.random() * 100);
+        }
+        const fallbackTexture = new THREE.CanvasTexture(canvas);
+        material.map = fallbackTexture;
+        material.needsUpdate = true;
+    }
+);
+
+const material = new THREE.MeshStandardMaterial({
+    map: earthTexture,
+    metalness: 0.1,
+    roughness: 0.7,
+    wireframe: false
+});
+const earth = new THREE.Mesh(geometry, material);
+scene.add(earth);
+
+// lighting for MeshStandardMaterial
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+directionalLight.position.set(5, 3, 5);
+scene.add(directionalLight);
+
+camera.position.z = 10;
+
+// Convert lat/lng → 3D position
+function latLngToVector3(lat, lng, radius = 5) {
+    const phi = (90 - lat) * (Math.PI / 180);
+    const theta = (lng + 180) * (Math.PI / 180);
+
+    return new THREE.Vector3(
+        radius * Math.sin(phi) * Math.cos(theta),
+        radius * Math.cos(phi),
+        radius * Math.sin(phi) * Math.sin(theta)
+    )
+}
+
+// Create arc between two points
+function createArc(start, end) {
+
+    const distance = start.distanceTo(end);
+    const mid = start.clone().add(end).multiplyScalar(0.5)
+    // mid.normalize().multiplyScalar(7) //lift curve
+    mid.normalize().multiplyScalar(5 + distance * 0.5)
+
+    const curve = new THREE.QuadraticBezierCurve3(
+        start, mid, end
+    );
+
+    const points = curve.getPoints(49);
+
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+    const material = new THREE.LineBasicMaterial({
+        color: 0xff3beb
+    });
+
+    const line = new THREE.Line(geometry, material);
+    scene.add(line);
+
+    setTimeout(() => {
+        scene.remove(line);
+        // Essential for memory management:
+        geometry.dispose();
+        material.dispose();
+    }, 2000);
+}
 
 const ws = new WebSocket(`ws://${location.host}`);
 
-let total = 0;
-let lastSecond = 0;
-
-const totalEl = document.getElementById('total');
-const rateEl = document.getElementById('rate');
-const logs = document.getElementById('logs');
-
-ws.onerror = function (error) {
-    console.error('WebSocket error:', error);
-    addLog('❌ Connection error');
-};
-
-ws.onopen = function () {
-    console.log('WebSocket connected');
-    addLog('✅ Connected to server');
-};
-
-ws.onclose = function () {
-    console.warn('WebSocket disconnected');
-    addLog('⚠️ Disconnected from server');
-};
-
-setInterval(() => {
-    rateEl.innerText = "Rate: " + lastSecond + "/sec";
-    lastSecond = 0;
-}, 1000);
-
-function addLog(text) {
-    const el = document.createElement("div");
-    el.textContent = "> " + text;
-    logs.prepend(el);
-
-    if (logs.children.length > 20) {
-        logs.removeChild(logs.lastChild);
-    }
-}
-
-// Calculate Great Circle points for curved lines, clipped to map bounds
-function getGreatCirclePoints(start, end, numPoints = 50) {
-    const points = [];
-    const startLat = start.lat * Math.PI / 180;
-    const startLng = start.lng * Math.PI / 180;
-    const endLat = end.lat * Math.PI / 180;
-    const endLng = end.lng * Math.PI / 180;
-
-    const d = 2 * Math.asin(Math.sqrt(
-        Math.sin((startLat - endLat) / 2) ** 2 +
-        Math.cos(startLat) * Math.cos(endLat) * Math.sin((startLng - endLng) / 2) ** 2
-    ));
-
-    // If points are too close, return straight line
-    if (d < 0.1) {
-        return [[start.lat, start.lng], [end.lat, end.lng]];
-    }
-
-    // For very long distances (crossing hemispheres), use intermediate routing
-    const lngDiff = Math.abs(end.lng - start.lng);
-    if (lngDiff > 180) {
-        // Use shorter path across the map
-        const intermediateLng = start.lng + (end.lng > start.lng ? -360 : 360) + (end.lng - start.lng) / 2;
-        const intermediateLat = (start.lat + end.lat) / 2;
-
-        // Create two segments
-        const segment1 = getGreatCirclePoints(start, { lat: intermediateLat, lng: intermediateLng }, numPoints / 2);
-        const segment2 = getGreatCirclePoints({ lat: intermediateLat, lng: intermediateLng }, end, numPoints / 2);
-
-        return [...segment1.slice(0, -1), ...segment2]; // Remove duplicate intermediate point
-    }
-
-    // Generate Great Circle points
-    const rawPoints = [];
-    for (let i = 0; i <= numPoints; i++) {
-        const f = i / numPoints;
-        const A = Math.sin((1 - f) * d) / Math.sin(d);
-        const B = Math.sin(f * d) / Math.sin(d);
-
-        const x = A * Math.cos(startLat) * Math.cos(startLng) + B * Math.cos(endLat) * Math.cos(endLng);
-        const y = A * Math.cos(startLat) * Math.sin(startLng) + B * Math.cos(endLat) * Math.sin(endLng);
-        const z = A * Math.sin(startLat) + B * Math.sin(endLat);
-
-        const lat = Math.atan2(z, Math.sqrt(x * x + y * y)) * 180 / Math.PI;
-        let lng = Math.atan2(y, x) * 180 / Math.PI;
-
-        // Normalize longitude to -180 to 180 range
-        while (lng > 180) lng -= 360;
-        while (lng < -180) lng += 360;
-
-        rawPoints.push([lat, lng]);
-    }
-
-    // Clip points to current map bounds to prevent lines from going off-screen
-    const bounds = map.getBounds();
-    const north = bounds.getNorth();
-    const south = bounds.getSouth();
-    const east = bounds.getEast();
-    const west = bounds.getWest();
-
-    return rawPoints.map(([lat, lng]) => {
-        // Clip latitude to map bounds with small padding
-        const clippedLat = Math.max(south - 5, Math.min(north + 5, lat));
-
-        // Handle longitude wrapping for lines that cross the date line
-        let clippedLng = lng;
-        if (Math.abs(lng - start.lng) > 180) {
-            clippedLng = lng > 0 ? lng - 360 : lng + 360;
-        }
-        clippedLng = Math.max(west - 10, Math.min(east + 10, clippedLng));
-
-        return [clippedLat, clippedLng];
-    });
-}
-
-ws.onmessage = function (event) {
+ws.onmessage = (event) => {
     const attack = JSON.parse(event.data);
 
-    total++;
-    lastSecond++;
+    const start = latLngToVector3(
+        attack.source.lat,
+        attack.source.lng
+    );
 
-    totalEl.innerText = "Total: " + total;
+    const end = latLngToVector3(
+        attack.target.lat,
+        attack.target.lng
+    );
 
-    const colorMap = {
-        DDoS: "#ff3b3b",
-        Botnet: "#ffaa00",
-        Malware: "#00ffcc",
-        Phishing: "#ff00ff"
-    }
-    const color = colorMap[attack.type];
-
-    // Create curved Great Circle line
-    const linePoints = getGreatCirclePoints(attack.source, attack.target);
-    const line = L.polyline(linePoints, {
-        color: color,
-        weight: 2,
-        opacity: 0.7,
-        className: 'attack-line'
-    }).addTo(map);
-
-    const sourceMarker = L.circleMarker(
-        [attack.source.lat, attack.source.lng],
-        { radius: 3, color, opacity: 0.8 }
-    ).addTo(map);
-
-    const targetMarker = L.circleMarker(
-        [attack.target.lat, attack.target.lng],
-        { radius: 3, color }
-    ).addTo(map);
-
-    addLog(`${attack.type} → (${attack.target.lat.toFixed(2)}, ${attack.target.lng.toFixed(2)})`);
-    setTimeout(() => map.removeLayer(line), 3000);
-    setTimeout(() => map.removeLayer(sourceMarker), 3000);
-    setTimeout(() => map.removeLayer(targetMarker), 3000);
+    createArc(start, end);
 }
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    earth.rotation.y += 0.0015;
+
+    renderer.render(scene, camera);
+}
+
+animate();

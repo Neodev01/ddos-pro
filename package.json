@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "express": "^5.2.1",
+    "three": "^0.183.2",
     "websocket": "^1.0.35"
   }
 }
